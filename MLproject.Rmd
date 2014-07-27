@@ -1,0 +1,245 @@
+---
+title: "Predicting Barbell Exercise Training Technique"
+output: html_document
+---
+
+### Executive Summary
+
+Barbell usage data was modeled to predict proper exercise training technique.  Multiple statistical models were evaluated and the random forest model was selected.  Out of sample accuracy is estimated to be 0.984.   Test set predictions are:  B A C A A E D B A A B C B A E E A B B B.   
+
+Note:  All of the code used to perform this analysis is embedded in the associated R markdown file. However, the modeling could not be executed from the R Markdown file due to the computing time required. The pertinent results from model execution are included in the embedded R code comments as well as the text of the R markdown document and html document.
+
+### Data Description
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self  movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).  The training data for this project are available here: 
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+The test data are available here:  https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+### Exploratory Analysis
+
+Visual inspection of the data revealed many NA values so  a function was written to identify columns of all-NA values in the testing set.  One hundred such columns were identified.  Six variables were visually identified to be unrelated to the outcome and thus unworthy of prediction.   A variable in the testing data, unrelated to any variable in the training set, was identified. A check of near zero variance was performed on all variables;  none were identified. A categorical variable was identified for transformation into dummy variables
+
+
+### Pre-Processing and Dimension Reduction
+
+Per the exploratory analysis,  one hundred all-NA variables were removed and  six variables deemed unworthy of prediction were removed from both training and testing sets.  The user_name categorical variable was converted into five dummy variables, using 0/1 coding.  The problem_id variable was removed from the test set, and the outcome variable was removed from the training set for further pre-processing and prediction.
+
+Further pro-processing  was performed to reduce skew (BoxCox method) , center and scale,  reduce outlier influence (spatialSign method)   and remove collinearity (pca method) in the remaining predictor variables.  
+
+The result of the above pre-processing resulted in a dimension reduction from 159 variables of raw data  to 25 variables of predictors
+```{r preprocess, echo=FALSE, message=F}
+set.seed(1)
+library(doParallel)
+cl<-makeCluster(detectCores())
+registerDoParallel(cl)
+#
+set.seed(696969)
+library(ggplot2)
+library(lattice)
+library(caret)
+library(plyr)
+library(randomForest)
+#
+setwd("~/Coursera/Machine Learning/Project/data")
+source('~/Coursera/Machine Learning/Project/MLprojectFunctions.R')
+#
+# Read data from local storage
+#
+training <- read.csv(file="training.csv", header = TRUE, sep=",", stringsAsFactors = T)
+testing  <- read.csv(file="testing.csv",  header = TRUE, sep=",", stringsAsFactors = T)
+#
+##############################################################################################
+#
+# Calculate which and how many variables in test set are All NA?
+testingNAcols <- c(rep(FALSE, ncol(testing)))  # initialize vector of All NA variables
+for (i in 1:ncol(testing))  {
+        n <- 0
+        for (j in 1:nrow(testing)) n <- n + is.na(testing[j,i])
+        if (n == nrow(testing)) testingNAcols[i] <- TRUE
+}
+n <- sum(testingNAcols) #  100 testing variables are All NA
+#
+#############################################################################################
+#
+# modify the  training and testing sets by:
+#    - eliminating the all-NA vars
+#    - eliminating unnecessary vars - cols 1,3,4,5,6,7
+#    - splitting off the outcome var - col 60
+#
+training <- training[,!testingNAcols]   # elim the all-NA vars
+testing  <-  testing[,!testingNAcols]
+#
+trainY <- training$classe        # split off the outcome var
+#
+training <- training[,c(-1,-3,-4,-5,-6,-7,-60)]  # remove non-predictor cars
+testing  <-  testing[,c(-1,-3,-4,-5,-6,-7,-60)]
+#
+# convert the user_name variable to 5 dummy variables
+#
+training <- createDummies(training) # convert user_name to 5 dummy vars
+training <- training[,-1]           # remove user_name
+testing  <-  createDummies(testing)
+testing  <-  testing[,-1]
+#
+# Check for near zero variance variables that can be removed
+nzv <- nearZeroVar(training)  # integer(0)  - none found
+#
+# housekeeping
+rm(i,j,n,testingNAcols)
+#
+#  We are left with 57 predictor vars including 5 dummy variables
+#
+#  Next:  Pre-Process the predictors to center, scale, rreduce skewing,
+#    remove outliers, and remove multicollinearity
+#
+set.seed(12345)
+transform <- preProcess(training,
+                method= c("BoxCox", "center", "scale", "pca", "spatialSign"),
+                outcome=trainY, verbose=F)
+
+training <- data.frame(predict(transform, training))
+testing  <- data.frame(predict(transform, testing))
+#
+#  After Pre-Processing, we have 25 predictors
+#
+#
+#  Below is different from previous model - run #2
+#
+#  Next, split the training set into a validation set and new training set
+#
+set.seed(13)
+newTrainingRows <- createDataPartition(trainY, p=0.99, list=F)
+training2 <- training[newTrainingRows,]
+validate <- training[-newTrainingRows,]
+training <- training2
+rm(training2)
+#
+# Split the outcome variable, trainY, into corresponding trainY and validateY
+#
+trainYbak <- trainY
+trainY    <- trainYbak[newTrainingRows]
+validateY <- trainYbak[-newTrainingRows]
+rm(trainYbak)
+#
+```
+
+### Exploratory Modeling
+
+Several modeling methods were used in "exploratory" modeling.  A linear discriminate analysis (lda) model yielded poor prediction accuracy.  A support vector machine (radialSVM) model took too long to run and was terminated.  A gradient boosted regression model  (gbm) may have provided good accuracy but required more computing resources than available (memory and time).
+
+### Model Selection
+
+A random forest model overcame the computing limitations of support vector machine models and gradient boosted regression models, and provided better accuracy than linear discriminate analysis modeling.
+
+Repeated cross validation sampling was employed, with 5 repeats of 10 fold cross validation, and a tuning length of 10. 
+
+The random forest model was evaluated on the training set over cost values ranging from 2^-1 to 2^7.
+
+For each cost value, the model was evaluated using five repeats of 10-fold cross-validation.  
+
+### Results
+
+For each random forest model evaluated,   cross validation generated 50 different estimates of accuracy; the solid points in Figure X are the average of these estimates, with the best estimated out-of-sample error rate to bt at a cost function of 2^1 and value of 0.984.
+
+The data in Figure X  is confirmed by an accuracy of 0.9816 yielded by this random forest model  trained on 95% of the original training data and predicting the outcome of the remaining 5% of the original training data ( a "validation" set).
+```{r model, echo=FALSE}
+set.seed(23455)
+#
+#  NOTES:  DUE TO COMPUTING REQUIREMENTS, THE REMAINING R CODE IS THIS R MARKDOWN 
+#  DOCUMENT COLD NOT BE EXECUTED DUE TO THE COMPUTING RESOURES REQUIRED. THE RESULTS 
+#  OF THE FOLLOWING CODE ARE LISTED IN-LINE AND THE PERTINENT RESULTS ARE DISCUSSED 
+#  IN THE TEXT OF THIS R MARKDOWN DOCUMENT AND HTML OUTPUT
+#
+#trainDF <- cbind(trainY, training)
+#system.time( rfFit <- train(trainY ~., data=trainDF,  method="rf",
+#                          tuneLength=10,
+#                          trControl = trainControl(method="repeatedcv"),repeats=5 ))
+#
+# system.time() output:     quad core 8GB
+# user   system  elapsed
+# 20.41    0.24  1050.87
+#
+# system.time() output:    dual core 4GB
+#   user  system elapsed
+#  33.04    0.50 2183.64
+#
+# rfFit  #  quad core
+# Random Forest
+#
+# 19428 samples
+#   25 predictors
+#    5 classes: 'A', 'B', 'C', 'D', 'E'
+#
+# No pre-processing
+# Resampling: Cross-Validated (10 fold, repeated 1 times)
+#
+# Summary of sample sizes: 17486, 17486, 17486, 17485, 17485, 17484, ...
+#
+# Resampling results across tuning parameters:
+#
+#  mtry  Accuracy  Kappa  Accuracy SD  Kappa SD
+#  2     0.984     0.979  0.00347      0.0044
+#  4     0.983     0.979  0.00359      0.00454
+#  7     0.983     0.979  0.00383      0.00485
+#  9     0.983     0.978  0.0039       0.00493
+#  12    0.982     0.977  0.00374      0.00474
+#  14    0.981     0.976  0.00343      0.00435
+#  17    0.979     0.974  0.00431      0.00545
+#  19    0.977     0.971  0.00458      0.0058
+#  22    0.974     0.968  0.005        0.00633
+#  25    0.971     0.964  0.00493      0.00624
+#
+# Accuracy was used to select the optimal model using  the largest value.
+# The final value used for the model was mtry = 2.
+#
+#  line plot of average performance
+#
+# plot(rfFit, scales = list( x= list(log=2) ))  # quad core
+#
+# predict training outcome, calculate accuracy
+#
+# trainPred <- predict(rfFit, training) #
+# (confusionMatrix(trainPred, trainY))$overall[1] #  Accuracy:  1
+#
+# predict validation outcome, calculate accuracy
+# validatePred <- predict(rfFit, validate)
+# (confusionMatrix(validatePred, validateY))$overall[1] # Accuracy: 0.9948454
+#
+# confusionMatrix(validatePred, validateY)
+# (confusionMatrix(validatePred, validateY))$table
+#
+#           Reference
+# Prediction
+#             A  B  C  D  E
+#          A 55  0  0  0  0
+#          B  0 37  0  0  0
+#          C  0  0 33  0  0
+#          D  0  0  1 32  0
+#          E  0  0  0  0 36
+#
+# testPred <- predict(rfFit, testing)
+# testPred
+# [1] B A C A A E D B A A B C B A E E A B B B 
+```
+
+### Out-of-Sample Error Estimation 
+
+.        By cross validation, as illustrated in Figure 1 and described above.  This estimate of out-of sample error rate is 0.984.
+
+.	By splitting the original training set into a smaller training set and validation set (95%-5%)., as described above, and estimating the out-of-sample error rate to be .9816
+
+### Test Set Prediction
+
+Applying our random forest model to the test set yields outcomes of:
+
+B A C A A E D B A A B C B A E E A B B B
+
+
+
+### Figure 1:  
+Estimated Out-of-Sample Accuracy of Random Forest Model Using 5 Repeats of 10 Fold Cross Validation, and a Tuning Length of 10
+
+![alt text](figure/embed.png)
+
+
+
